@@ -22,7 +22,7 @@ export function printOutput(report: AnalysisReport): void {
   console.log(`  Duration         : ${fmtSec(report.durationSec)}  (${fmtTime(report.durationSec)})`);
   console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
   console.log(`  Window size      : ${report.windowMs} ms`);
-  console.log(`  Noise range      : ${fmtDb(report.minThresholdDb)}  →  ${fmtDb(report.maxThresholdDb)}`);
+  console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
   console.log(hr("─"));
   console.log(`  Peak level       : ${fmtDb(report.overallPeakDb)}`);
   console.log(`  Average level    : ${fmtDb(report.overallAvgDb)}`);

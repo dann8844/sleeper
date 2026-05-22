@@ -35,9 +35,8 @@ const SAMPLE_RATE            = 8000;    // 8 kHz – native rate for AMR/phone a
 const CHANNELS               = 1;       // Mono simplifies RMS math
 const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
 const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
-const DEFAULT_MIN_THRESHOLD_DBFS = -20;  // only events louder than this
-const DEFAULT_MAX_THRESHOLD_DBFS = 0;    // only events quieter than this
-const DEFAULT_WINDOW_MS          = 100;  // analysis frame length in milliseconds
+const DEFAULT_THRESHOLD_DBFS = -20;  // windows above this are counted as noise
+const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
 // ─── Audio Decoding ───────────────────────────────────────────────────────────
@@ -90,7 +89,7 @@ function rmsToDbfs(rms: number): number {
  * Streams the PCM temp file in chunks and computes dBFS per window.
  * Never loads the full file into memory — safe for files of any size.
  */
-function analyzeWindows(tmpFilePath: string, minThresholdDb: number, maxThresholdDb: number, windowMs: number): WindowResult[] {
+function analyzeWindows(tmpFilePath: string, thresholdDb: number, windowMs: number): WindowResult[] {
   const windowSamples = Math.floor((SAMPLE_RATE * windowMs) / 1000);
   const windowBytes   = windowSamples * BYTES_PER_SAMPLE;
   const results: WindowResult[] = [];
@@ -120,7 +119,7 @@ function analyzeWindows(tmpFilePath: string, minThresholdDb: number, maxThreshol
         const rms = Math.sqrt(sumSq / windowSamples);
         const db  = rmsToDbfs(rms);
 
-        results.push({ startMs: windowIdx * windowMs, db, isNoise: db >= minThresholdDb && db <= maxThresholdDb });
+        results.push({ startMs: windowIdx * windowMs, db, isNoise: db > thresholdDb });
         windowIdx++;
       }
 
@@ -176,8 +175,7 @@ function buildReport(
   filePath: string,
   windows: WindowResult[],
   events: NoiseEvent[],
-  minThresholdDb: number,
-  maxThresholdDb: number,
+  thresholdDb: number,
   windowMs: number
 ): AnalysisReport {
   const totalWindows      = windows.length;
@@ -192,7 +190,7 @@ function buildReport(
     : -Infinity;
 
   return {
-    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, minThresholdDb, maxThresholdDb,
+    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
     noiseEvents: events, windows,
@@ -202,25 +200,23 @@ function buildReport(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 function main(): void {
-  const [, , audioPath, rawMin, rawMax, rawWindowMs] = process.argv;
+  const [, , audioPath, rawThreshold, rawWindowMs] = process.argv;
 
   if (!audioPath) {
     console.error([
       "",
-      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [min-dBFS] [max-dBFS] [window-ms]",
+      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms]",
       "",
-      "  audio-file   Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
-      "  min-dBFS     Low end of noise range — quieter events are ignored",
-      `               (default: ${DEFAULT_MIN_THRESHOLD_DBFS} dBFS)`,
-      "  max-dBFS     High end of noise range — louder events are ignored",
-      `               (default: ${DEFAULT_MAX_THRESHOLD_DBFS} dBFS)`,
-      "  window-ms    Analysis frame length in milliseconds",
-      `               (default: ${DEFAULT_WINDOW_MS} ms)`,
+      "  audio-file      Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
+      "  threshold-dBFS  Windows above this level are counted as noise",
+      `                  (default: ${DEFAULT_THRESHOLD_DBFS} dBFS)`,
+      "  window-ms       Analysis frame length in milliseconds",
+      `                  (default: ${DEFAULT_WINDOW_MS} ms)`,
       "",
       "Examples:",
       "  ts-node analyze-audio/analyze-audio.ts recording.mp3",
-      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30 -10",
-      "  ts-node analyze-audio/analyze-audio.ts interview.flac -40 -15 50",
+      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30",
+      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 50",
       "",
     ].join("\n"));
     process.exit(1);
@@ -231,20 +227,11 @@ function main(): void {
     process.exit(1);
   }
 
-  const minThresholdDb = rawMin       !== undefined ? parseFloat(rawMin)       : DEFAULT_MIN_THRESHOLD_DBFS;
-  const maxThresholdDb = rawMax       !== undefined ? parseFloat(rawMax)       : DEFAULT_MAX_THRESHOLD_DBFS;
-  const windowMs       = rawWindowMs  !== undefined ? parseInt(rawWindowMs, 10): DEFAULT_WINDOW_MS;
+  const thresholdDb = rawThreshold !== undefined ? parseFloat(rawThreshold) : DEFAULT_THRESHOLD_DBFS;
+  const windowMs    = rawWindowMs  !== undefined ? parseInt(rawWindowMs, 10) : DEFAULT_WINDOW_MS;
 
-  if (isNaN(minThresholdDb)) {
-    console.error(`Error: invalid min threshold "${rawMin}" – must be a number (e.g. -30)`);
-    process.exit(1);
-  }
-  if (isNaN(maxThresholdDb)) {
-    console.error(`Error: invalid max threshold "${rawMax}" – must be a number (e.g. -10)`);
-    process.exit(1);
-  }
-  if (minThresholdDb >= maxThresholdDb) {
-    console.error(`Error: min (${minThresholdDb}) must be less than max (${maxThresholdDb})`);
+  if (isNaN(thresholdDb)) {
+    console.error(`Error: invalid threshold "${rawThreshold}" – must be a number (e.g. -20)`);
     process.exit(1);
   }
   if (isNaN(windowMs) || windowMs < 1) {
@@ -265,9 +252,9 @@ function main(): void {
     console.log(`Decoded ${fileSizeMB.toFixed(1)} MB  (${durationSec.toFixed(2)} s of audio)`);
     console.log("Analyzing windows…");
 
-    const windows = analyzeWindows(tmpFile, minThresholdDb, maxThresholdDb, windowMs);
+    const windows = analyzeWindows(tmpFile, thresholdDb, windowMs);
     const events  = detectNoiseEvents(windows, windowMs);
-    const report  = buildReport(audioPath, windows, events, minThresholdDb, maxThresholdDb, windowMs);
+    const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs);
 
     printOutput(report);
   } finally {
