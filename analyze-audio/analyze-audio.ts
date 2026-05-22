@@ -37,7 +37,9 @@ const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
 const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
 const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
 const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
-const DEFAULT_SILENCE_GAP_MS = 500;  // silence needed to close a noise event
+const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
+const DEFAULT_START_OFFSET_MIN = 30;   // skip this many minutes from the start
+const DEFAULT_END_OFFSET_MIN   = 10;   // skip this many minutes from the end
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
 // ─── Audio Decoding ───────────────────────────────────────────────────────────
@@ -87,28 +89,42 @@ function rmsToDbfs(rms: number): number {
 }
 
 /**
- * Streams the PCM temp file in chunks and computes dBFS per window.
- * Never loads the full file into memory — safe for files of any size.
+ * Streams only the [startSec, endSec] slice of the PCM temp file.
+ * Seeks directly to startSec so no time is wasted on skipped audio.
  */
-function analyzeWindows(tmpFilePath: string, thresholdDb: number, windowMs: number): WindowResult[] {
+function analyzeWindows(
+  tmpFilePath: string,
+  thresholdDb: number,
+  windowMs: number,
+  startSec: number,
+  endSec: number
+): WindowResult[] {
   const windowSamples = Math.floor((SAMPLE_RATE * windowMs) / 1000);
   const windowBytes   = windowSamples * BYTES_PER_SAMPLE;
   const results: WindowResult[] = [];
 
+  // Align the start to a window boundary and seek there directly
+  const startWindowIdx  = Math.floor((startSec * SAMPLE_RATE) / windowSamples);
+  const startFileOffset = startWindowIdx * windowBytes;
+
   const fd      = fs.openSync(tmpFilePath, "r");
   const chunk   = Buffer.alloc(CHUNK_SIZE);
   let leftover  = Buffer.alloc(0);
-  let windowIdx = 0;
+  let windowIdx = startWindowIdx;
+  let filePos   = startFileOffset;
 
   try {
     let bytesRead: number;
 
-    while ((bytesRead = fs.readSync(fd, chunk, 0, CHUNK_SIZE, null)) > 0) {
-      // Prepend any leftover bytes from the previous chunk
+    while ((bytesRead = fs.readSync(fd, chunk, 0, CHUNK_SIZE, filePos)) > 0) {
+      filePos += bytesRead;
       const data = Buffer.concat([leftover, chunk.subarray(0, bytesRead)]);
       const numCompleteWindows = Math.floor(data.length / windowBytes);
 
       for (let w = 0; w < numCompleteWindows; w++) {
+        const winStartSec = (windowIdx * windowMs) / 1000;
+        if (winStartSec >= endSec) break;
+
         const offset = w * windowBytes;
         let sumSq = 0;
 
@@ -124,8 +140,10 @@ function analyzeWindows(tmpFilePath: string, thresholdDb: number, windowMs: numb
         windowIdx++;
       }
 
-      // Keep the partial window (if any) for the next iteration
       leftover = data.subarray(numCompleteWindows * windowBytes);
+
+      // Stop reading if we've passed the end
+      if ((windowIdx * windowMs) / 1000 >= endSec) break;
     }
   } finally {
     fs.closeSync(fd);
@@ -196,10 +214,13 @@ function buildReport(
   events: NoiseEvent[],
   thresholdDb: number,
   windowMs: number,
-  silenceGapMs: number
+  silenceGapMs: number,
+  analyzeStartSec: number,
+  analyzeEndSec: number,
+  totalDurationSec: number
 ): AnalysisReport {
   const totalWindows      = windows.length;
-  const durationSec       = (totalWindows * windowMs) / 1000;
+  const durationSec       = analyzeEndSec - analyzeStartSec;
   const noiseWindows      = windows.filter((w) => w.isNoise);
   const totalNoiseTimeSec = (noiseWindows.length * windowMs) / 1000;
   const percentageNoise   = totalWindows > 0 ? (noiseWindows.length / totalWindows) * 100 : 0;
@@ -211,6 +232,7 @@ function buildReport(
 
   return {
     filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb, silenceGapMs,
+    analyzeStartSec, analyzeEndSec, totalDurationSec,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
     noiseEvents: events, windows,
@@ -220,25 +242,29 @@ function buildReport(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 function main(): void {
-  const [, , audioPath, rawThreshold, rawWindowMs, rawSilenceGap] = process.argv;
+  const [, , audioPath, rawThreshold, rawWindowMs, rawSilenceGap, rawStartMin, rawEndMin] = process.argv;
 
   if (!audioPath) {
     console.error([
       "",
-      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms] [silence-gap-ms]",
+      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms] [silence-gap-ms] [start-min] [end-offset-min]",
       "",
-      "  audio-file      Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
-      "  threshold-dBFS  Windows above this level are counted as noise",
-      `                  (default: ${DEFAULT_THRESHOLD_DBFS} dBFS)`,
-      "  window-ms       Analysis frame length in milliseconds",
-      `                  (default: ${DEFAULT_WINDOW_MS} ms)`,
-      "  silence-gap-ms  Silence duration needed to close a noise event",
-      `                  (default: ${DEFAULT_SILENCE_GAP_MS} ms)`,
+      "  audio-file       Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
+      "  threshold-dBFS   Windows above this level are counted as noise",
+      `                   (default: ${DEFAULT_THRESHOLD_DBFS} dBFS)`,
+      "  window-ms        Analysis frame length in milliseconds",
+      `                   (default: ${DEFAULT_WINDOW_MS} ms)`,
+      "  silence-gap-ms   Silence duration needed to close a noise event",
+      `                   (default: ${DEFAULT_SILENCE_GAP_MS} ms)`,
+      "  start-min        Skip this many minutes from the start",
+      `                   (default: ${DEFAULT_START_OFFSET_MIN} min)`,
+      "  end-offset-min   Skip this many minutes from the end",
+      `                   (default: ${DEFAULT_END_OFFSET_MIN} min)`,
       "",
       "Examples:",
       "  ts-node analyze-audio/analyze-audio.ts recording.mp3",
-      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30 100 500",
-      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 100 1000",
+      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30 100 500 30 10",
+      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 100 1000 0 0",
       "",
     ].join("\n"));
     process.exit(1);
@@ -249,9 +275,11 @@ function main(): void {
     process.exit(1);
   }
 
-  const thresholdDb  = rawThreshold  !== undefined ? parseFloat(rawThreshold)      : DEFAULT_THRESHOLD_DBFS;
-  const windowMs     = rawWindowMs   !== undefined ? parseInt(rawWindowMs,   10)   : DEFAULT_WINDOW_MS;
-  const silenceGapMs = rawSilenceGap !== undefined ? parseInt(rawSilenceGap, 10)   : DEFAULT_SILENCE_GAP_MS;
+  const thresholdDb    = rawThreshold !== undefined ? parseFloat(rawThreshold)    : DEFAULT_THRESHOLD_DBFS;
+  const windowMs       = rawWindowMs  !== undefined ? parseInt(rawWindowMs,  10)  : DEFAULT_WINDOW_MS;
+  const silenceGapMs   = rawSilenceGap !== undefined ? parseInt(rawSilenceGap, 10) : DEFAULT_SILENCE_GAP_MS;
+  const startOffsetMin = rawStartMin  !== undefined ? parseFloat(rawStartMin)     : DEFAULT_START_OFFSET_MIN;
+  const endOffsetMin   = rawEndMin    !== undefined ? parseFloat(rawEndMin)       : DEFAULT_END_OFFSET_MIN;
 
   if (isNaN(thresholdDb)) {
     console.error(`Error: invalid threshold "${rawThreshold}" – must be a number (e.g. -20)`);
@@ -265,6 +293,14 @@ function main(): void {
     console.error(`Error: invalid silence gap "${rawSilenceGap}" – must be a positive integer`);
     process.exit(1);
   }
+  if (isNaN(startOffsetMin) || startOffsetMin < 0) {
+    console.error(`Error: invalid start offset "${rawStartMin}" – must be >= 0`);
+    process.exit(1);
+  }
+  if (isNaN(endOffsetMin) || endOffsetMin < 0) {
+    console.error(`Error: invalid end offset "${rawEndMin}" – must be >= 0`);
+    process.exit(1);
+  }
 
   console.log(`\nAnalyzing: ${audioPath}`);
   console.log("Decoding audio via ffmpeg…");
@@ -274,14 +310,23 @@ function main(): void {
   try {
     tmpFile = decodeToPCMFile(audioPath);
 
-    const fileSizeMB  = fs.statSync(tmpFile).size / 1024 / 1024;
-    const durationSec = (fs.statSync(tmpFile).size / BYTES_PER_SAMPLE) / SAMPLE_RATE;
-    console.log(`Decoded ${fileSizeMB.toFixed(1)} MB  (${durationSec.toFixed(2)} s of audio)`);
-    console.log("Analyzing windows…");
+    const fileStat        = fs.statSync(tmpFile);
+    const totalDurationSec = (fileStat.size / BYTES_PER_SAMPLE) / SAMPLE_RATE;
+    const analyzeStartSec  = startOffsetMin * 60;
+    const analyzeEndSec    = totalDurationSec - endOffsetMin * 60;
 
-    const windows = analyzeWindows(tmpFile, thresholdDb, windowMs);
+    if (analyzeStartSec >= analyzeEndSec) {
+      console.error(`Error: analysis window is empty — start (${analyzeStartSec.toFixed(0)}s) >= end (${analyzeEndSec.toFixed(0)}s)`);
+      process.exit(1);
+    }
+
+    const fileSizeMB = fileStat.size / 1024 / 1024;
+    console.log(`Decoded ${fileSizeMB.toFixed(1)} MB  (${totalDurationSec.toFixed(2)} s of audio)`);
+    console.log(`Analyzing ${(analyzeStartSec / 60).toFixed(1)}min → ${(analyzeEndSec / 60).toFixed(1)}min…`);
+
+    const windows = analyzeWindows(tmpFile, thresholdDb, windowMs, analyzeStartSec, analyzeEndSec);
     const events  = detectNoiseEvents(windows, windowMs, silenceGapMs);
-    const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs, silenceGapMs);
+    const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs, silenceGapMs, analyzeStartSec, analyzeEndSec, totalDurationSec);
 
     printOutput(report);
   } finally {

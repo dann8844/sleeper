@@ -27,6 +27,9 @@ export interface AnalysisReport {
   windowMs: number;
   thresholdDb: number;
   silenceGapMs: number;
+  analyzeStartSec: number;
+  analyzeEndSec: number;
+  totalDurationSec: number;
 
   // Level summary
   overallPeakDb: number;

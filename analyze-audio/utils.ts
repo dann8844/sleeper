@@ -19,7 +19,8 @@ export function printOutput(report: AnalysisReport): void {
   console.log("  AUDIO NOISE ANALYSIS REPORT");
   console.log(hr("═"));
   console.log(`  File             : ${path.basename(report.filePath)}`);
-  console.log(`  Duration         : ${fmtSec(report.durationSec)}  (${fmtTime(report.durationSec)})`);
+  console.log(`  Total duration   : ${fmtSec(report.totalDurationSec)}  (${fmtTime(report.totalDurationSec)})`);
+  console.log(`  Analyzed range   : ${fmtTime(report.analyzeStartSec)}  →  ${fmtTime(report.analyzeEndSec)}  (${fmtSec(report.durationSec)})`);
   console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
   console.log(`  Window size      : ${report.windowMs} ms`);
   console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
