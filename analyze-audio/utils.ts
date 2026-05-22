@@ -6,15 +6,23 @@ const fmtSec = (s: number) => `${s.toFixed(3)} s`;
 const fmtPct = (n: number) => `${n.toFixed(1)} %`;
 const hr     = (char: string) => char.repeat(62);
 
+/** Convert raw seconds to HH:MM:SS.mm */
+const fmtTime = (s: number): string => {
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${sec.toFixed(2).padStart(5, "0")}`;
+};
+
 export function printOutput(report: AnalysisReport): void {
   console.log("\n" + hr("═"));
   console.log("  AUDIO NOISE ANALYSIS REPORT");
   console.log(hr("═"));
   console.log(`  File             : ${path.basename(report.filePath)}`);
-  console.log(`  Duration         : ${fmtSec(report.durationSec)}`);
+  console.log(`  Duration         : ${fmtSec(report.durationSec)}  (${fmtTime(report.durationSec)})`);
   console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
   console.log(`  Window size      : ${report.windowMs} ms`);
-  console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
+  console.log(`  Noise range      : ${fmtDb(report.minThresholdDb)}  →  ${fmtDb(report.maxThresholdDb)}`);
   console.log(hr("─"));
   console.log(`  Peak level       : ${fmtDb(report.overallPeakDb)}`);
   console.log(`  Average level    : ${fmtDb(report.overallAvgDb)}`);
@@ -29,17 +37,16 @@ export function printOutput(report: AnalysisReport): void {
     return;
   }
 
-  console.log("  EVENTS  (start → end | duration | peak | avg)");
+  console.log("  EVENTS  (#  | starts at          | duration  | peak         | avg)");
   console.log(hr("─"));
 
   report.noiseEvents.forEach((e, i) => {
     const idx   = String(i + 1).padStart(4, " ");
-    const start = fmtSec(e.startSec).padStart(10);
-    const end   = fmtSec(e.endSec).padStart(10);
+    const start = `${fmtTime(e.startSec)}  (${fmtSec(e.startSec)})`.padEnd(28);
     const dur   = fmtSec(e.durationSec).padStart(9);
     const peak  = fmtDb(e.peakDb).padStart(12);
     const avg   = fmtDb(e.avgDb).padStart(12);
-    console.log(`  #${idx}  ${start} → ${end} | ${dur} | ${peak} | ${avg}`);
+    console.log(`  #${idx}  | ${start} | ${dur} | ${peak} | ${avg}`);
   });
 
   console.log(hr("═") + "\n");
