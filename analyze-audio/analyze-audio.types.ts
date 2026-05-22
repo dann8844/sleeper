@@ -25,7 +25,8 @@ export interface AnalysisReport {
   durationSec: number;
   sampleRate: number;
   windowMs: number;
-  thresholdDb: number;
+  minThresholdDb: number;
+  maxThresholdDb: number;
 
   // Level summary
   overallPeakDb: number;

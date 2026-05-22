@@ -19,43 +19,50 @@
  *   ts-node analyze-audio/analyze-audio.ts recording.mp3
  *   ts-node analyze-audio/analyze-audio.ts podcast.wav -30
  *   ts-node analyze-audio/analyze-audio.ts interview.flac -20 50
- *
- * Requirements:
- *   ffmpeg must be installed and on your PATH.
  */
 
 import { spawnSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import ffmpegPath from "ffmpeg-static";
 import { AnalysisReport, NoiseEvent, WindowResult } from "./analyze-audio.types";
 import { printOutput } from "./utils";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SAMPLE_RATE           = 44100;   // Hz – all audio is resampled to this
-const CHANNELS              = 1;       // Mono simplifies RMS math
-const BYTES_PER_SAMPLE      = 2;       // 16-bit signed PCM → 2 bytes
-const MAX_AMPLITUDE         = 32768;   // 2^15 (16-bit signed full scale)
-const DEFAULT_THRESHOLD_DBFS = -20;
-const DEFAULT_WINDOW_MS     = 100;     // analysis frame length in milliseconds
+const SAMPLE_RATE            = 8000;    // 8 kHz – native rate for AMR/phone audio
+const CHANNELS               = 1;       // Mono simplifies RMS math
+const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
+const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
+const DEFAULT_MIN_THRESHOLD_DBFS = -20;  // only events louder than this
+const DEFAULT_MAX_THRESHOLD_DBFS = 0;    // only events quieter than this
+const DEFAULT_WINDOW_MS          = 100;  // analysis frame length in milliseconds
+const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
 // ─── Audio Decoding ───────────────────────────────────────────────────────────
 
 /**
- * Runs ffmpeg to decode the input file into raw signed-16-bit little-endian
- * PCM at SAMPLE_RATE / CHANNELS and returns the data as a Node Buffer.
+ * Runs ffmpeg to decode the input file into a raw s16le PCM temp file.
+ * Returns the temp file path — caller is responsible for deleting it.
  */
-function decodeToPCM(inputPath: string): Buffer {
+function decodeToPCMFile(inputPath: string): string {
+  if (!ffmpegPath) throw new Error("ffmpeg-static binary not found.");
+
+  const tmpFile = path.join(os.tmpdir(), `sleeper-pcm-${Date.now()}.raw`);
+
   const result = spawnSync(
-    "ffmpeg",
+    ffmpegPath,
     [
       "-v", "error",
       "-i", inputPath,
       "-ar", String(SAMPLE_RATE),
       "-ac", String(CHANNELS),
       "-f", "s16le",
-      "pipe:1",
+      "-y",
+      tmpFile,
     ],
-    { maxBuffer: 512 * 1024 * 1024 }
+    { maxBuffer: 1024 * 1024 }  // only stderr flows through the pipe
   );
 
   if (result.error) {
@@ -69,7 +76,7 @@ function decodeToPCM(inputPath: string): Buffer {
     );
   }
 
-  return result.stdout as Buffer;
+  return tmpFile;
 }
 
 // ─── Signal Analysis ──────────────────────────────────────────────────────────
@@ -79,26 +86,49 @@ function rmsToDbfs(rms: number): number {
   return rms === 0 ? -Infinity : 20 * Math.log10(rms / MAX_AMPLITUDE);
 }
 
-/** Slice the PCM buffer into fixed-size windows and compute dBFS for each. */
-function analyzeWindows(pcm: Buffer, thresholdDb: number, windowMs: number): WindowResult[] {
+/**
+ * Streams the PCM temp file in chunks and computes dBFS per window.
+ * Never loads the full file into memory — safe for files of any size.
+ */
+function analyzeWindows(tmpFilePath: string, minThresholdDb: number, maxThresholdDb: number, windowMs: number): WindowResult[] {
   const windowSamples = Math.floor((SAMPLE_RATE * windowMs) / 1000);
   const windowBytes   = windowSamples * BYTES_PER_SAMPLE;
-  const numWindows    = Math.floor(pcm.length / windowBytes);
   const results: WindowResult[] = [];
 
-  for (let w = 0; w < numWindows; w++) {
-    const offset = w * windowBytes;
-    let sumSq = 0;
+  const fd      = fs.openSync(tmpFilePath, "r");
+  const chunk   = Buffer.alloc(CHUNK_SIZE);
+  let leftover  = Buffer.alloc(0);
+  let windowIdx = 0;
 
-    for (let s = 0; s < windowSamples; s++) {
-      const sample = pcm.readInt16LE(offset + s * BYTES_PER_SAMPLE);
-      sumSq += sample * sample;
+  try {
+    let bytesRead: number;
+
+    while ((bytesRead = fs.readSync(fd, chunk, 0, CHUNK_SIZE, null)) > 0) {
+      // Prepend any leftover bytes from the previous chunk
+      const data = Buffer.concat([leftover, chunk.subarray(0, bytesRead)]);
+      const numCompleteWindows = Math.floor(data.length / windowBytes);
+
+      for (let w = 0; w < numCompleteWindows; w++) {
+        const offset = w * windowBytes;
+        let sumSq = 0;
+
+        for (let s = 0; s < windowSamples; s++) {
+          const sample = data.readInt16LE(offset + s * BYTES_PER_SAMPLE);
+          sumSq += sample * sample;
+        }
+
+        const rms = Math.sqrt(sumSq / windowSamples);
+        const db  = rmsToDbfs(rms);
+
+        results.push({ startMs: windowIdx * windowMs, db, isNoise: db >= minThresholdDb && db <= maxThresholdDb });
+        windowIdx++;
+      }
+
+      // Keep the partial window (if any) for the next iteration
+      leftover = data.subarray(numCompleteWindows * windowBytes);
     }
-
-    const rms = Math.sqrt(sumSq / windowSamples);
-    const db  = rmsToDbfs(rms);
-
-    results.push({ startMs: w * windowMs, db, isNoise: db > thresholdDb });
+  } finally {
+    fs.closeSync(fd);
   }
 
   return results;
@@ -146,20 +176,23 @@ function buildReport(
   filePath: string,
   windows: WindowResult[],
   events: NoiseEvent[],
-  thresholdDb: number,
+  minThresholdDb: number,
+  maxThresholdDb: number,
   windowMs: number
 ): AnalysisReport {
-  const totalWindows    = windows.length;
-  const durationSec     = (totalWindows * windowMs) / 1000;
-  const noiseWindows    = windows.filter((w) => w.isNoise);
+  const totalWindows      = windows.length;
+  const durationSec       = (totalWindows * windowMs) / 1000;
+  const noiseWindows      = windows.filter((w) => w.isNoise);
   const totalNoiseTimeSec = (noiseWindows.length * windowMs) / 1000;
-  const percentageNoise = totalWindows > 0 ? (noiseWindows.length / totalWindows) * 100 : 0;
-  const finiteDb        = windows.map((w) => w.db).filter(isFinite);
-  const overallPeakDb   = finiteDb.length > 0 ? Math.max(...finiteDb) : -Infinity;
-  const overallAvgDb    = finiteDb.length > 0 ? finiteDb.reduce((a, b) => a + b, 0) / finiteDb.length : -Infinity;
+  const percentageNoise   = totalWindows > 0 ? (noiseWindows.length / totalWindows) * 100 : 0;
+  const finiteDb          = windows.map((w) => w.db).filter(isFinite);
+  const overallPeakDb     = finiteDb.reduce((max, v) => v > max ? v : max, -Infinity);
+  const overallAvgDb      = finiteDb.length > 0
+    ? finiteDb.reduce((sum, v) => sum + v, 0) / finiteDb.length
+    : -Infinity;
 
   return {
-    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb,
+    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, minThresholdDb, maxThresholdDb,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
     noiseEvents: events, windows,
@@ -169,23 +202,25 @@ function buildReport(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 function main(): void {
-  const [, , audioPath, rawThreshold, rawWindowMs] = process.argv;
+  const [, , audioPath, rawMin, rawMax, rawWindowMs] = process.argv;
 
   if (!audioPath) {
     console.error([
       "",
-      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms]",
+      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [min-dBFS] [max-dBFS] [window-ms]",
       "",
-      "  audio-file      Any format supported by ffmpeg (mp3, wav, flac, …)",
-      "  threshold-dBFS  Level above which a window is counted as noise",
-      `                  (default: ${DEFAULT_THRESHOLD_DBFS} dBFS)`,
-      "  window-ms       Analysis frame length in milliseconds",
-      `                  (default: ${DEFAULT_WINDOW_MS} ms)`,
+      "  audio-file   Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
+      "  min-dBFS     Low end of noise range — quieter events are ignored",
+      `               (default: ${DEFAULT_MIN_THRESHOLD_DBFS} dBFS)`,
+      "  max-dBFS     High end of noise range — louder events are ignored",
+      `               (default: ${DEFAULT_MAX_THRESHOLD_DBFS} dBFS)`,
+      "  window-ms    Analysis frame length in milliseconds",
+      `               (default: ${DEFAULT_WINDOW_MS} ms)`,
       "",
       "Examples:",
       "  ts-node analyze-audio/analyze-audio.ts recording.mp3",
-      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30",
-      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 50",
+      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30 -10",
+      "  ts-node analyze-audio/analyze-audio.ts interview.flac -40 -15 50",
       "",
     ].join("\n"));
     process.exit(1);
@@ -196,11 +231,20 @@ function main(): void {
     process.exit(1);
   }
 
-  const thresholdDb = rawThreshold !== undefined ? parseFloat(rawThreshold) : DEFAULT_THRESHOLD_DBFS;
-  const windowMs    = rawWindowMs  !== undefined ? parseInt(rawWindowMs, 10) : DEFAULT_WINDOW_MS;
+  const minThresholdDb = rawMin       !== undefined ? parseFloat(rawMin)       : DEFAULT_MIN_THRESHOLD_DBFS;
+  const maxThresholdDb = rawMax       !== undefined ? parseFloat(rawMax)       : DEFAULT_MAX_THRESHOLD_DBFS;
+  const windowMs       = rawWindowMs  !== undefined ? parseInt(rawWindowMs, 10): DEFAULT_WINDOW_MS;
 
-  if (isNaN(thresholdDb)) {
-    console.error(`Error: invalid threshold "${rawThreshold}" – must be a number (e.g. -20)`);
+  if (isNaN(minThresholdDb)) {
+    console.error(`Error: invalid min threshold "${rawMin}" – must be a number (e.g. -30)`);
+    process.exit(1);
+  }
+  if (isNaN(maxThresholdDb)) {
+    console.error(`Error: invalid max threshold "${rawMax}" – must be a number (e.g. -10)`);
+    process.exit(1);
+  }
+  if (minThresholdDb >= maxThresholdDb) {
+    console.error(`Error: min (${minThresholdDb}) must be less than max (${maxThresholdDb})`);
     process.exit(1);
   }
   if (isNaN(windowMs) || windowMs < 1) {
@@ -211,16 +255,24 @@ function main(): void {
   console.log(`\nAnalyzing: ${audioPath}`);
   console.log("Decoding audio via ffmpeg…");
 
-  const pcm = decodeToPCM(audioPath);
-  const decodedSec = (pcm.length / BYTES_PER_SAMPLE) / SAMPLE_RATE;
-  console.log(`Decoded ${(pcm.length / 1024 / 1024).toFixed(1)} MB  (${decodedSec.toFixed(2)} s of audio)`);
-  console.log("Analyzing windows…");
+  let tmpFile: string | null = null;
 
-  const windows = analyzeWindows(pcm, thresholdDb, windowMs);
-  const events  = detectNoiseEvents(windows, windowMs);
-  const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs);
+  try {
+    tmpFile = decodeToPCMFile(audioPath);
 
-  printOutput(report);
+    const fileSizeMB  = fs.statSync(tmpFile).size / 1024 / 1024;
+    const durationSec = (fs.statSync(tmpFile).size / BYTES_PER_SAMPLE) / SAMPLE_RATE;
+    console.log(`Decoded ${fileSizeMB.toFixed(1)} MB  (${durationSec.toFixed(2)} s of audio)`);
+    console.log("Analyzing windows…");
+
+    const windows = analyzeWindows(tmpFile, minThresholdDb, maxThresholdDb, windowMs);
+    const events  = detectNoiseEvents(windows, windowMs);
+    const report  = buildReport(audioPath, windows, events, minThresholdDb, maxThresholdDb, windowMs);
+
+    printOutput(report);
+  } finally {
+    if (tmpFile && fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+  }
 }
 
 main();
