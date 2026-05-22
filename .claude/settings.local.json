@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__github__create_repository",
+      "PowerShell(Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force)"
+    ]
+  }
+}

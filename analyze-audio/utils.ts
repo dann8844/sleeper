@@ -1,0 +1,46 @@
+import * as path from "path";
+import { AnalysisReport } from "./analyze-audio.types";
+
+const fmtDb  = (n: number) => (isFinite(n) ? `${n.toFixed(2)} dBFS` : "-∞ dBFS");
+const fmtSec = (s: number) => `${s.toFixed(3)} s`;
+const fmtPct = (n: number) => `${n.toFixed(1)} %`;
+const hr     = (char: string) => char.repeat(62);
+
+export function printOutput(report: AnalysisReport): void {
+  console.log("\n" + hr("═"));
+  console.log("  AUDIO NOISE ANALYSIS REPORT");
+  console.log(hr("═"));
+  console.log(`  File             : ${path.basename(report.filePath)}`);
+  console.log(`  Duration         : ${fmtSec(report.durationSec)}`);
+  console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
+  console.log(`  Window size      : ${report.windowMs} ms`);
+  console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
+  console.log(hr("─"));
+  console.log(`  Peak level       : ${fmtDb(report.overallPeakDb)}`);
+  console.log(`  Average level    : ${fmtDb(report.overallAvgDb)}`);
+  console.log(hr("─"));
+  console.log(`  Noise events     : ${report.noiseEventCount}`);
+  console.log(`  Total noise time : ${fmtSec(report.totalNoiseTimeSec)}`);
+  console.log(`  Noise coverage   : ${fmtPct(report.percentageNoise)}`);
+  console.log(hr("─"));
+
+  if (report.noiseEvents.length === 0) {
+    console.log("  No noise events detected above threshold.\n");
+    return;
+  }
+
+  console.log("  EVENTS  (start → end | duration | peak | avg)");
+  console.log(hr("─"));
+
+  report.noiseEvents.forEach((e, i) => {
+    const idx   = String(i + 1).padStart(4, " ");
+    const start = fmtSec(e.startSec).padStart(10);
+    const end   = fmtSec(e.endSec).padStart(10);
+    const dur   = fmtSec(e.durationSec).padStart(9);
+    const peak  = fmtDb(e.peakDb).padStart(12);
+    const avg   = fmtDb(e.avgDb).padStart(12);
+    console.log(`  #${idx}  ${start} → ${end} | ${dur} | ${peak} | ${avg}`);
+  });
+
+  console.log(hr("═") + "\n");
+}
