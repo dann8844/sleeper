@@ -35,7 +35,7 @@ const SAMPLE_RATE            = 8000;    // 8 kHz – native rate for AMR/phone a
 const CHANNELS               = 1;       // Mono simplifies RMS math
 const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
 const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
-const DEFAULT_THRESHOLD_DBFS = -20;  // windows above this are counted as noise
+const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
 const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
