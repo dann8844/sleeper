@@ -37,6 +37,7 @@ const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
 const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
 const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
 const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
+const DEFAULT_SILENCE_GAP_MS = 500;  // silence needed to close a noise event
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
 // ─── Audio Decoding ───────────────────────────────────────────────────────────
@@ -133,37 +134,55 @@ function analyzeWindows(tmpFilePath: string, thresholdDb: number, windowMs: numb
   return results;
 }
 
-/** Group consecutive above-threshold windows into discrete noise events. */
-function detectNoiseEvents(windows: WindowResult[], windowMs: number): NoiseEvent[] {
+/**
+ * Group noise windows into events.
+ * An event closes only after `silenceGapMs` of consecutive silence —
+ * any loud window within the gap resets the counter and extends the event.
+ */
+function detectNoiseEvents(windows: WindowResult[], windowMs: number, silenceGapMs: number): NoiseEvent[] {
+  const silenceGapWindows = Math.ceil(silenceGapMs / windowMs);
   const events: NoiseEvent[] = [];
-  let inEvent = false;
-  let startSec = 0;
-  let peakDb = -Infinity;
-  let sumDb = 0;
-  let count = 0;
+
+  let inEvent       = false;
+  let startSec      = 0;
+  let peakDb        = -Infinity;
+  let sumDb         = 0;
+  let count         = 0;
+  let silenceCount  = 0;      // consecutive silent windows since last noise
+  let silenceStart  = 0;      // timestamp where current silence run began (seconds)
 
   const closeEvent = (endSec: number) => {
     events.push({ startSec, endSec, durationSec: endSec - startSec, peakDb, avgDb: sumDb / count });
-    inEvent = false;
-    peakDb = -Infinity;
-    sumDb = 0;
-    count = 0;
+    inEvent      = false;
+    peakDb       = -Infinity;
+    sumDb        = 0;
+    count        = 0;
+    silenceCount = 0;
   };
 
   for (const win of windows) {
     if (win.isNoise) {
-      if (!inEvent) { inEvent = true; startSec = win.startMs / 1000; }
+      if (!inEvent) {
+        inEvent   = true;
+        startSec  = win.startMs / 1000;
+      }
+      // Loud window resets the silence counter — event stays open
+      silenceCount = 0;
       if (win.db > peakDb) peakDb = win.db;
       sumDb += win.db;
       count++;
     } else if (inEvent) {
-      closeEvent(win.startMs / 1000);
+      if (silenceCount === 0) silenceStart = win.startMs / 1000;
+      silenceCount++;
+      // Only close the event once silence has lasted long enough
+      if (silenceCount >= silenceGapWindows) closeEvent(silenceStart);
     }
   }
 
+  // Close any event still open at end of file
   if (inEvent && windows.length > 0) {
-    const last = windows[windows.length - 1];
-    closeEvent((last.startMs + windowMs) / 1000);
+    const endSec = silenceCount > 0 ? silenceStart : (windows[windows.length - 1].startMs + windowMs) / 1000;
+    closeEvent(endSec);
   }
 
   return events;
@@ -176,7 +195,8 @@ function buildReport(
   windows: WindowResult[],
   events: NoiseEvent[],
   thresholdDb: number,
-  windowMs: number
+  windowMs: number,
+  silenceGapMs: number
 ): AnalysisReport {
   const totalWindows      = windows.length;
   const durationSec       = (totalWindows * windowMs) / 1000;
@@ -190,7 +210,7 @@ function buildReport(
     : -Infinity;
 
   return {
-    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb,
+    filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb, silenceGapMs,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
     noiseEvents: events, windows,
@@ -200,23 +220,25 @@ function buildReport(
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 function main(): void {
-  const [, , audioPath, rawThreshold, rawWindowMs] = process.argv;
+  const [, , audioPath, rawThreshold, rawWindowMs, rawSilenceGap] = process.argv;
 
   if (!audioPath) {
     console.error([
       "",
-      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms]",
+      "Usage:  ts-node analyze-audio/analyze-audio.ts <audio-file> [threshold-dBFS] [window-ms] [silence-gap-ms]",
       "",
       "  audio-file      Any format supported by ffmpeg (mp3, wav, flac, amr, …)",
       "  threshold-dBFS  Windows above this level are counted as noise",
       `                  (default: ${DEFAULT_THRESHOLD_DBFS} dBFS)`,
       "  window-ms       Analysis frame length in milliseconds",
       `                  (default: ${DEFAULT_WINDOW_MS} ms)`,
+      "  silence-gap-ms  Silence duration needed to close a noise event",
+      `                  (default: ${DEFAULT_SILENCE_GAP_MS} ms)`,
       "",
       "Examples:",
       "  ts-node analyze-audio/analyze-audio.ts recording.mp3",
-      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30",
-      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 50",
+      "  ts-node analyze-audio/analyze-audio.ts podcast.wav -30 100 500",
+      "  ts-node analyze-audio/analyze-audio.ts interview.flac -25 100 1000",
       "",
     ].join("\n"));
     process.exit(1);
@@ -227,8 +249,9 @@ function main(): void {
     process.exit(1);
   }
 
-  const thresholdDb = rawThreshold !== undefined ? parseFloat(rawThreshold) : DEFAULT_THRESHOLD_DBFS;
-  const windowMs    = rawWindowMs  !== undefined ? parseInt(rawWindowMs, 10) : DEFAULT_WINDOW_MS;
+  const thresholdDb  = rawThreshold  !== undefined ? parseFloat(rawThreshold)      : DEFAULT_THRESHOLD_DBFS;
+  const windowMs     = rawWindowMs   !== undefined ? parseInt(rawWindowMs,   10)   : DEFAULT_WINDOW_MS;
+  const silenceGapMs = rawSilenceGap !== undefined ? parseInt(rawSilenceGap, 10)   : DEFAULT_SILENCE_GAP_MS;
 
   if (isNaN(thresholdDb)) {
     console.error(`Error: invalid threshold "${rawThreshold}" – must be a number (e.g. -20)`);
@@ -236,6 +259,10 @@ function main(): void {
   }
   if (isNaN(windowMs) || windowMs < 1) {
     console.error(`Error: invalid window size "${rawWindowMs}" – must be a positive integer`);
+    process.exit(1);
+  }
+  if (isNaN(silenceGapMs) || silenceGapMs < 1) {
+    console.error(`Error: invalid silence gap "${rawSilenceGap}" – must be a positive integer`);
     process.exit(1);
   }
 
@@ -253,8 +280,8 @@ function main(): void {
     console.log("Analyzing windows…");
 
     const windows = analyzeWindows(tmpFile, thresholdDb, windowMs);
-    const events  = detectNoiseEvents(windows, windowMs);
-    const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs);
+    const events  = detectNoiseEvents(windows, windowMs, silenceGapMs);
+    const report  = buildReport(audioPath, windows, events, thresholdDb, windowMs, silenceGapMs);
 
     printOutput(report);
   } finally {

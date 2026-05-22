@@ -23,6 +23,7 @@ export function printOutput(report: AnalysisReport): void {
   console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
   console.log(`  Window size      : ${report.windowMs} ms`);
   console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
+  console.log(`  Silence gap      : ${report.silenceGapMs} ms`);
   console.log(hr("─"));
   console.log(`  Peak level       : ${fmtDb(report.overallPeakDb)}`);
   console.log(`  Average level    : ${fmtDb(report.overallAvgDb)}`);
