@@ -1,0 +1,14 @@
+{
+  "name": "sleeper",
+  "version": "1.0.0",
+  "description": "Audio noise event analyzer",
+  "scripts": {
+    "analyze": "ts-node analyze-audio.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.7"
+  }
+}
