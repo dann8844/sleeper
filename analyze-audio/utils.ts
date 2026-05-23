@@ -22,6 +22,13 @@ const fmtTimeSec = (s: number): string => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 };
 
+/** Convert raw seconds to HH:MM (hours + minutes only) */
+const fmtHM = (s: number): string => {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+};
+
 export function printOutput(report: AnalysisReport): void {
   console.log("\n" + hr("═"));
   console.log("  AUDIO NOISE ANALYSIS REPORT");
@@ -89,9 +96,12 @@ export function printOutput(report: AnalysisReport): void {
   console.log("  Hour range        |  Noises");
   console.log(hr("─"));
 
+  const firstHour = report.noiseByHour[0]?.hour ?? 0;
+  const lastHour  = report.noiseByHour[report.noiseByHour.length - 1]?.hour ?? 0;
+
   report.noiseByHour.forEach(({ hour, noiseCount }) => {
-    const from = `${String(hour).padStart(2, "0")}:00`;
-    const to   = `${String(hour + 1).padStart(2, "0")}:00`;
+    const from  = hour === firstHour ? fmtHM(report.analyzeStartSec)      : `${String(hour).padStart(2, "0")}:00`;
+    const to    = hour === lastHour  ? fmtHM(report.analyzeEndSec)         : `${String(hour + 1).padStart(2, "0")}:00`;
     const range = `${from} – ${to}`.padEnd(18);
     console.log(`  ${range}  |  ${noiseCount}`);
   });
