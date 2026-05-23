@@ -51,5 +51,25 @@ export function printOutput(report: AnalysisReport): void {
     console.log(`  #${idx}  | ${start} | ${dur} | ${peak} | ${avg}`);
   });
 
+  console.log(hr("═"));
+
+  // ── Sequence frequency table ───────────────────────────────────────────────
+  console.log("\n  SEQUENCE FREQUENCY  (gap < 3 s between events)");
+  console.log(hr("─"));
+
+  if (report.sequences.length === 0) {
+    console.log("  No sequences found.\n");
+    return;
+  }
+
+  console.log("  Noises in sequence  |  Number of sequences");
+  console.log(hr("─"));
+
+  report.sequences.forEach(({ noiseCount, sequenceCount }) => {
+    const col1 = String(noiseCount).padStart(18);
+    const col2 = String(sequenceCount).padStart(20);
+    console.log(`  ${col1}  |${col2}`);
+  });
+
   console.log(hr("═") + "\n");
 }

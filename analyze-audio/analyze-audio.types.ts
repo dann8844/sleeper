@@ -43,4 +43,13 @@ export interface AnalysisReport {
   // Detail
   noiseEvents: NoiseEvent[];
   windows: WindowResult[];
+  sequences: NoiseSequenceRow[];
+}
+
+/** One row in the sequence frequency table */
+export interface NoiseSequenceRow {
+  /** How many noise events are in each sequence of this type */
+  noiseCount: number;
+  /** How many sequences contain exactly that many noises */
+  sequenceCount: number;
 }

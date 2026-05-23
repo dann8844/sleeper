@@ -26,7 +26,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import ffmpegPath from "ffmpeg-static";
-import { AnalysisReport, NoiseEvent, WindowResult } from "./analyze-audio.types";
+import { AnalysisReport, NoiseEvent, NoiseSequenceRow, WindowResult } from "./analyze-audio.types";
 import { printOutput } from "./utils";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,6 +38,7 @@ const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
 const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
 const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
 const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
+const SEQUENCE_GAP_SEC        = 3;    // max gap between events to still be the same sequence
 const DEFAULT_START_OFFSET_MIN = 30;   // skip this many minutes from the start
 const DEFAULT_END_OFFSET_MIN   = 10;   // skip this many minutes from the end
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
@@ -206,6 +207,39 @@ function detectNoiseEvents(windows: WindowResult[], windowMs: number, silenceGap
   return events;
 }
 
+/**
+ * Groups noise events into sequences (events separated by < SEQUENCE_GAP_SEC).
+ * Returns a frequency table sorted by noiseCount desc, then sequenceCount desc.
+ */
+function detectSequences(events: NoiseEvent[]): NoiseSequenceRow[] {
+  if (events.length === 0) return [];
+
+  // Walk the events and count how many fall into each run
+  const runLengths: number[] = [];
+  let runLength = 1;
+
+  for (let i = 1; i < events.length; i++) {
+    const gap = events[i].startSec - events[i - 1].endSec;
+    if (gap < SEQUENCE_GAP_SEC) {
+      runLength++;
+    } else {
+      runLengths.push(runLength);
+      runLength = 1;
+    }
+  }
+  runLengths.push(runLength);
+
+  // Build frequency map: noiseCount → how many sequences have that length
+  const freq = new Map<number, number>();
+  for (const len of runLengths) {
+    freq.set(len, (freq.get(len) ?? 0) + 1);
+  }
+
+  return Array.from(freq.entries())
+    .map(([noiseCount, sequenceCount]) => ({ noiseCount, sequenceCount }))
+    .sort((a, b) => b.noiseCount - a.noiseCount || b.sequenceCount - a.sequenceCount);
+}
+
 // ─── Report Building ──────────────────────────────────────────────────────────
 
 function buildReport(
@@ -230,12 +264,14 @@ function buildReport(
     ? finiteDb.reduce((sum, v) => sum + v, 0) / finiteDb.length
     : -Infinity;
 
+  const sequences = detectSequences(events);
+
   return {
     filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb, silenceGapMs,
     analyzeStartSec, analyzeEndSec, totalDurationSec,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
-    noiseEvents: events, windows,
+    noiseEvents: events, windows, sequences,
   };
 }
 
