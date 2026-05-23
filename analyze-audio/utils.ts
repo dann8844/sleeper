@@ -14,6 +14,14 @@ const fmtTime = (s: number): string => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${sec.toFixed(2).padStart(5, "0")}`;
 };
 
+/** Convert raw seconds to HH:MM:SS (no milliseconds) */
+const fmtTimeSec = (s: number): string => {
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+};
+
 export function printOutput(report: AnalysisReport): void {
   console.log("\n" + hr("═"));
   console.log("  AUDIO NOISE ANALYSIS REPORT");
@@ -62,13 +70,14 @@ export function printOutput(report: AnalysisReport): void {
     return;
   }
 
-  console.log("  Noises in sequence  |  Number of sequences");
+  console.log("  Noises  |  Count  |  Start times");
   console.log(hr("─"));
 
-  report.sequences.forEach(({ noiseCount, sequenceCount }) => {
-    const col1 = String(noiseCount).padStart(18);
-    const col2 = String(sequenceCount).padStart(20);
-    console.log(`  ${col1}  |${col2}`);
+  report.sequences.forEach(({ noiseCount, sequenceCount, startTimes }) => {
+    const col1  = String(noiseCount).padStart(7);
+    const col2  = String(sequenceCount).padStart(7);
+    const times = startTimes.map(fmtTimeSec).join(", ");
+    console.log(`  ${col1}  |${col2}  |  ${times}`);
   });
 
   console.log(hr("═") + "\n");

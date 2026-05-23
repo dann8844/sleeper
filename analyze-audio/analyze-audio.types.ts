@@ -52,4 +52,6 @@ export interface NoiseSequenceRow {
   noiseCount: number;
   /** How many sequences contain exactly that many noises */
   sequenceCount: number;
+  /** Start time (seconds) of each sequence with this noiseCount */
+  startTimes: number[];
 }

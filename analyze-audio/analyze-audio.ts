@@ -214,29 +214,37 @@ function detectNoiseEvents(windows: WindowResult[], windowMs: number, silenceGap
 function detectSequences(events: NoiseEvent[]): NoiseSequenceRow[] {
   if (events.length === 0) return [];
 
-  // Walk the events and count how many fall into each run
-  const runLengths: number[] = [];
-  let runLength = 1;
+  // Walk events, recording the length and start time of each run
+  const runs: { length: number; startSec: number }[] = [];
+  let runLength  = 1;
+  let runStartSec = events[0].startSec;
 
   for (let i = 1; i < events.length; i++) {
     const gap = events[i].startSec - events[i - 1].endSec;
     if (gap < SEQUENCE_GAP_SEC) {
       runLength++;
     } else {
-      runLengths.push(runLength);
-      runLength = 1;
+      runs.push({ length: runLength, startSec: runStartSec });
+      runLength   = 1;
+      runStartSec = events[i].startSec;
     }
   }
-  runLengths.push(runLength);
+  runs.push({ length: runLength, startSec: runStartSec });
 
-  // Build frequency map: noiseCount → how many sequences have that length
-  const freq = new Map<number, number>();
-  for (const len of runLengths) {
-    freq.set(len, (freq.get(len) ?? 0) + 1);
+  // Group by run length, collecting start times for each
+  const freq = new Map<number, { sequenceCount: number; startTimes: number[] }>();
+  for (const { length, startSec } of runs) {
+    const entry = freq.get(length);
+    if (entry) {
+      entry.sequenceCount++;
+      entry.startTimes.push(startSec);
+    } else {
+      freq.set(length, { sequenceCount: 1, startTimes: [startSec] });
+    }
   }
 
   return Array.from(freq.entries())
-    .map(([noiseCount, sequenceCount]) => ({ noiseCount, sequenceCount }))
+    .map(([noiseCount, { sequenceCount, startTimes }]) => ({ noiseCount, sequenceCount, startTimes }))
     .sort((a, b) => b.noiseCount - a.noiseCount || b.sequenceCount - a.sequenceCount);
 }
 
