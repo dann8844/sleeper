@@ -81,5 +81,20 @@ export function printOutput(report: AnalysisReport): void {
     console.log(`  ${col1}  |${col2}  |  ${times}`);
   });
 
+  console.log(hr("═"));
+
+  // ── Noises by hour ─────────────────────────────────────────────────────────
+  console.log("\n  NOISES BY HOUR");
+  console.log(hr("─"));
+  console.log("  Hour range        |  Noises");
+  console.log(hr("─"));
+
+  report.noiseByHour.forEach(({ hour, noiseCount }) => {
+    const from = `${String(hour).padStart(2, "0")}:00`;
+    const to   = `${String(hour + 1).padStart(2, "0")}:00`;
+    const range = `${from} – ${to}`.padEnd(18);
+    console.log(`  ${range}  |  ${noiseCount}`);
+  });
+
   console.log(hr("═") + "\n");
 }

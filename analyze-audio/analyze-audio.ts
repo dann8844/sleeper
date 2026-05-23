@@ -26,7 +26,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import ffmpegPath from "ffmpeg-static";
-import { AnalysisReport, NoiseEvent, NoiseSequenceRow, WindowResult } from "./analyze-audio.types";
+import { AnalysisReport, NoiseByHourRow, NoiseEvent, NoiseSequenceRow, WindowResult } from "./analyze-audio.types";
 import { printOutput } from "./utils";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
 const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
 const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
 const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
-const SEQUENCE_GAP_SEC        = 3;    // max gap between events to still be the same sequence
+const SEQUENCE_GAP_SEC        = 10;    // max gap between events to still be the same sequence
 const DEFAULT_START_OFFSET_MIN = 30;   // skip this many minutes from the start
 const DEFAULT_END_OFFSET_MIN   = 10;   // skip this many minutes from the end
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
@@ -248,6 +248,30 @@ function detectSequences(events: NoiseEvent[]): NoiseSequenceRow[] {
     .sort((a, b) => b.noiseCount - a.noiseCount || b.sequenceCount - a.sequenceCount);
 }
 
+/**
+ * Counts noise events per full clock hour within the analyzed range.
+ * Every hour from the first to the last in the range is included,
+ * even if it has zero events.
+ */
+function computeNoiseByHour(events: NoiseEvent[], analyzeStartSec: number, analyzeEndSec: number): NoiseByHourRow[] {
+  const startHour = Math.floor(analyzeStartSec / 3600);
+  const endHour   = Math.floor((analyzeEndSec - 1) / 3600); // last hour that has any analyzed content
+
+  // Count events per hour
+  const counts = new Map<number, number>();
+  for (const event of events) {
+    const hour = Math.floor(event.startSec / 3600);
+    counts.set(hour, (counts.get(hour) ?? 0) + 1);
+  }
+
+  // Build rows for every hour in range, including 0-count ones
+  const rows: NoiseByHourRow[] = [];
+  for (let h = startHour; h <= endHour; h++) {
+    rows.push({ hour: h, noiseCount: counts.get(h) ?? 0 });
+  }
+  return rows;
+}
+
 // ─── Report Building ──────────────────────────────────────────────────────────
 
 function buildReport(
@@ -272,14 +296,15 @@ function buildReport(
     ? finiteDb.reduce((sum, v) => sum + v, 0) / finiteDb.length
     : -Infinity;
 
-  const sequences = detectSequences(events);
+  const sequences   = detectSequences(events);
+  const noiseByHour = computeNoiseByHour(events, analyzeStartSec, analyzeEndSec);
 
   return {
     filePath, durationSec, sampleRate: SAMPLE_RATE, windowMs, thresholdDb, silenceGapMs,
     analyzeStartSec, analyzeEndSec, totalDurationSec,
     overallPeakDb, overallAvgDb,
     noiseEventCount: events.length, totalNoiseTimeSec, percentageNoise,
-    noiseEvents: events, windows, sequences,
+    noiseEvents: events, windows, sequences, noiseByHour,
   };
 }
 

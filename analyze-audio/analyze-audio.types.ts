@@ -44,6 +44,15 @@ export interface AnalysisReport {
   noiseEvents: NoiseEvent[];
   windows: WindowResult[];
   sequences: NoiseSequenceRow[];
+  noiseByHour: NoiseByHourRow[];
+}
+
+/** One row in the hourly breakdown table */
+export interface NoiseByHourRow {
+  /** 0-based hour number (e.g. 2 = 02:00–03:00) */
+  hour: number;
+  /** Number of noise events that start in this hour */
+  noiseCount: number;
 }
 
 /** One row in the sequence frequency table */
