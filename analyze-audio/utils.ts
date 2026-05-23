@@ -76,7 +76,8 @@ export function printOutput(report: AnalysisReport): void {
   report.sequences.forEach(({ noiseCount, sequenceCount, startTimes }) => {
     const col1  = String(noiseCount).padStart(7);
     const col2  = String(sequenceCount).padStart(7);
-    const times = startTimes.map(fmtTimeSec).join(", ");
+    const visible = startTimes.slice(0, 12).map(fmtTimeSec);
+    const times   = startTimes.length > 12 ? [...visible, "..."].join(", ") : visible.join(", ");
     console.log(`  ${col1}  |${col2}  |  ${times}`);
   });
 
