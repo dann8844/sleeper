@@ -52,15 +52,11 @@ function listAudioDevices(): string[] {
 
   const stderr = (result.stderr as Buffer).toString();
   const devices: string[] = [];
-  let inAudioSection = false;
 
   for (const line of stderr.split("\n")) {
-    if (line.includes("DirectShow audio devices")) { inAudioSection = true; continue; }
-    if (inAudioSection && line.includes("DirectShow video")) break;
-    if (inAudioSection) {
-      const match = line.match(/"([^"]+)"/);
-      if (match && !line.includes("Alternative name")) devices.push(match[1]);
-    }
+    // Each device appears as: "Device Name" (audio)
+    const match = line.match(/"([^"]+)"\s*\(audio\)/);
+    if (match) devices.push(match[1]);
   }
 
   return devices;
