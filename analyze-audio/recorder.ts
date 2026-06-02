@@ -64,13 +64,16 @@ function listAudioDevices(): string[] {
 
 // ─── Input Helper ─────────────────────────────────────────────────────────────
 
-/** Resolves when the user presses Enter. */
-function waitForEnter(): Promise<void> {
+/** Asks `question`, resolves with the trimmed answer. */
+function prompt(question: string): Promise<string> {
   return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question("", () => { rl.close(); resolve(); });
+    rl.question(question, answer => { rl.close(); resolve(answer.trim()); });
   });
 }
+
+/** Resolves when the user presses Enter. */
+const waitForEnter = () => prompt("");
 
 // ─── Recording ────────────────────────────────────────────────────────────────
 
@@ -139,8 +142,23 @@ async function main(): Promise<void> {
   console.log(` found ${devices.length}:\n`);
   devices.forEach((d, i) => console.log(`  [${i + 1}]  ${d}`));
 
-  const device = devices[0];
-  console.log(`\nUsing: "${device}"`);
+  let device: string;
+
+  if (devices.length === 1) {
+    device = devices[0];
+    console.log(`\nUsing: "${device}"`);
+  } else {
+    let choice = -1;
+    while (choice < 1 || choice > devices.length) {
+      const raw = await prompt(`\nSelect device [1–${devices.length}]: `);
+      choice = parseInt(raw, 10);
+      if (isNaN(choice) || choice < 1 || choice > devices.length) {
+        console.log(`  Please enter a number between 1 and ${devices.length}.`);
+      }
+    }
+    device = devices[choice - 1];
+    console.log(`Using: "${device}"`);
+  }
 
   // Prepare output file
   const outFile = timestampedPath();
