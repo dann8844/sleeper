@@ -31,13 +31,13 @@ import { printOutput } from "./utils";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SAMPLE_RATE            = 8000;    // 8 kHz – native rate for AMR/phone audio
-const CHANNELS               = 1;       // Mono simplifies RMS math
-const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
+export const SAMPLE_RATE            = 8000;    // 8 kHz – native rate for AMR/phone audio
+export const CHANNELS               = 1;       // Mono simplifies RMS math
+export const BYTES_PER_SAMPLE       = 2;       // 16-bit signed PCM → 2 bytes
 const MAX_AMPLITUDE          = 32768;   // 2^15 (16-bit signed full scale)
-const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
-const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
-const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
+export const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as noise
+export const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
+export const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
 const SEQUENCE_GAP_SEC        = 10;    // max gap between events to still be the same sequence
 const DEFAULT_START_OFFSET_MIN = 30;   // skip this many minutes from the start
 const DEFAULT_END_OFFSET_MIN   = 10;   // skip this many minutes from the end
@@ -49,7 +49,7 @@ const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
  * Runs ffmpeg to decode the input file into a raw s16le PCM temp file.
  * Returns the temp file path — caller is responsible for deleting it.
  */
-function decodeToPCMFile(inputPath: string): string {
+export function decodeToPCMFile(inputPath: string): string {
   if (!ffmpegPath) throw new Error("ffmpeg-static binary not found.");
 
   const tmpFile = path.join(os.tmpdir(), `sleeper-pcm-${Date.now()}.raw`);
@@ -93,7 +93,7 @@ function rmsToDbfs(rms: number): number {
  * Streams only the [startSec, endSec] slice of the PCM temp file.
  * Seeks directly to startSec so no time is wasted on skipped audio.
  */
-function analyzeWindows(
+export function analyzeWindows(
   tmpFilePath: string,
   thresholdDb: number,
   windowMs: number,
@@ -158,7 +158,7 @@ function analyzeWindows(
  * An event closes only after `silenceGapMs` of consecutive silence —
  * any loud window within the gap resets the counter and extends the event.
  */
-function detectNoiseEvents(windows: WindowResult[], windowMs: number, silenceGapMs: number): NoiseEvent[] {
+export function detectNoiseEvents(windows: WindowResult[], windowMs: number, silenceGapMs: number): NoiseEvent[] {
   const silenceGapWindows = Math.ceil(silenceGapMs / windowMs);
   const events: NoiseEvent[] = [];
 
@@ -274,7 +274,7 @@ function computeNoiseByHour(events: NoiseEvent[], analyzeStartSec: number, analy
 
 // ─── Report Building ──────────────────────────────────────────────────────────
 
-function buildReport(
+export function buildReport(
   filePath: string,
   windows: WindowResult[],
   events: NoiseEvent[],
@@ -403,4 +403,4 @@ function main(): void {
   }
 }
 
-main();
+if (require.main === module) main();

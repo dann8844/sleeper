@@ -4,7 +4,8 @@
   "description": "Audio noise event analyzer",
   "scripts": {
     "analyze": "ts-node analyze-audio/analyze-audio.ts",
-    "start": "ts-node analyze-audio/analyze-audio.ts"
+    "start": "ts-node analyze-audio/analyze-audio.ts",
+    "record": "ts-node analyze-audio/recorder.ts"
   },
   "dependencies": {},
   "devDependencies": {
