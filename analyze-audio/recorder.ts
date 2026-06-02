@@ -28,6 +28,8 @@ import {
   DEFAULT_THRESHOLD_DBFS,
   DEFAULT_WINDOW_MS,
   DEFAULT_SILENCE_GAP_MS,
+  DEFAULT_START_OFFSET_MIN,
+  DEFAULT_END_OFFSET_MIN,
   BYTES_PER_SAMPLE,
   SAMPLE_RATE,
 } from "./analyze-audio";
@@ -106,8 +108,8 @@ function analyze(audioPath: string): void {
     tmpFile = decodeToPCMFile(audioPath);
 
     const totalDurationSec = fs.statSync(tmpFile).size / BYTES_PER_SAMPLE / SAMPLE_RATE;
-    const analyzeStartSec  = 0;
-    const analyzeEndSec    = totalDurationSec;
+    const analyzeStartSec  = DEFAULT_START_OFFSET_MIN * 60;
+    const analyzeEndSec    = totalDurationSec - DEFAULT_END_OFFSET_MIN * 60;
 
     console.log(`Decoded ${(fs.statSync(tmpFile).size / 1024 / 1024).toFixed(1)} MB  (${totalDurationSec.toFixed(2)} s of audio)`);
     console.log("Analyzing…");
