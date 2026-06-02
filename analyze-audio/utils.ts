@@ -14,15 +14,32 @@ const fmtTime = (s: number): string => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${sec.toFixed(2).padStart(5, "0")}`;
 };
 
+/** Convert raw seconds to HH:MM:SS (no milliseconds) */
+const fmtTimeSec = (s: number): string => {
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+};
+
+/** Convert raw seconds to HH:MM (hours + minutes only) */
+const fmtHM = (s: number): string => {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+};
+
 export function printOutput(report: AnalysisReport): void {
   console.log("\n" + hr("═"));
   console.log("  AUDIO NOISE ANALYSIS REPORT");
   console.log(hr("═"));
   console.log(`  File             : ${path.basename(report.filePath)}`);
-  console.log(`  Duration         : ${fmtSec(report.durationSec)}  (${fmtTime(report.durationSec)})`);
+  console.log(`  Total duration   : ${fmtSec(report.totalDurationSec)}  (${fmtTime(report.totalDurationSec)})`);
+  console.log(`  Analyzed range   : ${fmtTime(report.analyzeStartSec)}  →  ${fmtTime(report.analyzeEndSec)}  (${fmtSec(report.durationSec)})`);
   console.log(`  Sample rate      : ${report.sampleRate} Hz (resampled)`);
   console.log(`  Window size      : ${report.windowMs} ms`);
   console.log(`  Threshold        : ${fmtDb(report.thresholdDb)}`);
+  console.log(`  Silence gap      : ${report.silenceGapMs} ms`);
   console.log(hr("─"));
   console.log(`  Peak level       : ${fmtDb(report.overallPeakDb)}`);
   console.log(`  Average level    : ${fmtDb(report.overallAvgDb)}`);
@@ -47,6 +64,46 @@ export function printOutput(report: AnalysisReport): void {
     const peak  = fmtDb(e.peakDb).padStart(12);
     const avg   = fmtDb(e.avgDb).padStart(12);
     console.log(`  #${idx}  | ${start} | ${dur} | ${peak} | ${avg}`);
+  });
+
+  console.log(hr("═"));
+
+  // ── Sequence frequency table ───────────────────────────────────────────────
+  console.log("\n  SEQUENCE FREQUENCY  (gap < 3 s between events)");
+  console.log(hr("─"));
+
+  if (report.sequences.length === 0) {
+    console.log("  No sequences found.\n");
+    return;
+  }
+
+  console.log("  Noises  |  Count  |  Start times");
+  console.log(hr("─"));
+
+  report.sequences.forEach(({ noiseCount, sequenceCount, startTimes }) => {
+    const col1  = String(noiseCount).padStart(7);
+    const col2  = String(sequenceCount).padStart(7);
+    const visible = startTimes.slice(0, 12).map(fmtTimeSec);
+    const times   = startTimes.length > 12 ? [...visible, "..."].join(", ") : visible.join(", ");
+    console.log(`  ${col1}  |${col2}  |  ${times}`);
+  });
+
+  console.log(hr("═"));
+
+  // ── Noises by hour ─────────────────────────────────────────────────────────
+  console.log("\n  NOISES BY HOUR");
+  console.log(hr("─"));
+  console.log("  Hour range        |  Noises");
+  console.log(hr("─"));
+
+  const firstHour = report.noiseByHour[0]?.hour ?? 0;
+  const lastHour  = report.noiseByHour[report.noiseByHour.length - 1]?.hour ?? 0;
+
+  report.noiseByHour.forEach(({ hour, noiseCount }) => {
+    const from  = hour === firstHour ? fmtHM(report.analyzeStartSec)      : `${String(hour).padStart(2, "0")}:00`;
+    const to    = hour === lastHour  ? fmtHM(report.analyzeEndSec)         : `${String(hour + 1).padStart(2, "0")}:00`;
+    const range = `${from} – ${to}`.padEnd(18);
+    console.log(`  ${range}  |  ${noiseCount}`);
   });
 
   console.log(hr("═") + "\n");

@@ -26,6 +26,10 @@ export interface AnalysisReport {
   sampleRate: number;
   windowMs: number;
   thresholdDb: number;
+  silenceGapMs: number;
+  analyzeStartSec: number;
+  analyzeEndSec: number;
+  totalDurationSec: number;
 
   // Level summary
   overallPeakDb: number;
@@ -39,4 +43,24 @@ export interface AnalysisReport {
   // Detail
   noiseEvents: NoiseEvent[];
   windows: WindowResult[];
+  sequences: NoiseSequenceRow[];
+  noiseByHour: NoiseByHourRow[];
+}
+
+/** One row in the hourly breakdown table */
+export interface NoiseByHourRow {
+  /** 0-based hour number (e.g. 2 = 02:00–03:00) */
+  hour: number;
+  /** Number of noise events that start in this hour */
+  noiseCount: number;
+}
+
+/** One row in the sequence frequency table */
+export interface NoiseSequenceRow {
+  /** How many noise events are in each sequence of this type */
+  noiseCount: number;
+  /** How many sequences contain exactly that many noises */
+  sequenceCount: number;
+  /** Start time (seconds) of each sequence with this noiseCount */
+  startTimes: number[];
 }
