@@ -75,32 +75,56 @@ const waitForEnter = () => prompt("");
 
 // ─── Sound Playback ───────────────────────────────────────────────────────────
 
+let preconvertedWavs: string[] = [];
 let lastPlayedAt = 0;
 
+/**
+ * Pre-converts every sound in SOUNDS_DIR to a temp WAV at startup.
+ * Done once, synchronously, before recording begins — avoids any blocking
+ * during the recording loop where spawnSync would freeze the event loop.
+ */
+function preconvertSounds(): void {
+  if (!ffmpegPath || !fs.existsSync(SOUNDS_DIR)) return;
+
+  const files = fs.readdirSync(SOUNDS_DIR)
+    .filter((f: string) => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f));
+  if (files.length === 0) return;
+
+  process.stdout.write(`Pre-converting ${files.length} sound(s)…`);
+
+  for (const file of files) {
+    const src = path.join(SOUNDS_DIR, file);
+    const tmp = path.join(os.tmpdir(), `sleeper-snd-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
+    const result = spawnSync(ffmpegPath, ["-v", "error", "-i", src, "-y", tmp]);
+    if (result.status === 0) preconvertedWavs.push(tmp);
+  }
+
+  console.log(` done (${preconvertedWavs.length} ready).`);
+}
+
+/** Deletes all pre-converted temp WAVs. */
+function cleanupSounds(): void {
+  for (const f of preconvertedWavs) {
+    try { fs.unlinkSync(f); } catch {}
+  }
+}
+
+/**
+ * Plays a random pre-converted WAV non-blocking.
+ * Uses PowerShell's SoundPlayer.Play() which returns immediately.
+ */
 function playRandomSound(): void {
+  if (preconvertedWavs.length === 0) return;
+
   const now = Date.now();
   if (now - lastPlayedAt < PLAY_COOLDOWN_MS) return;
   lastPlayedAt = now;
 
-  if (!fs.existsSync(SOUNDS_DIR)) return;
+  const wav = preconvertedWavs[Math.floor(Math.random() * preconvertedWavs.length)];
 
-  const files = fs.readdirSync(SOUNDS_DIR)
-    .filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f));
-  if (files.length === 0) return;
-
-  const srcPath = path.join(SOUNDS_DIR, files[Math.floor(Math.random() * files.length)]);
-
-  // Convert to a temp WAV (fast for short notification sounds), then play
-  // via PowerShell SoundPlayer in a detached process so it doesn't block.
-  const tmpWav = path.join(os.tmpdir(), `sleeper-snd-${Date.now()}.wav`);
-
-  const convert = spawnSync(ffmpegPath!, ["-v", "error", "-i", srcPath, "-y", tmpWav]);
-  if (convert.status !== 0) return;
-
-  // PlaySync() blocks the PowerShell process until done, then cleans up.
   spawn(
     "powershell",
-    ["-c", `$p = New-Object Media.SoundPlayer '${tmpWav}'; $p.PlaySync(); Remove-Item '${tmpWav}'`],
+    ["-c", `(New-Object Media.SoundPlayer '${wav}').Play()`],
     { stdio: "ignore", detached: true }
   ).unref();
 }
@@ -125,6 +149,7 @@ function startRecording(device: string, outFile: string) {
   return spawn(
     ffmpegPath,
     [
+      "-fflags", "nobuffer",   // minimise PCM output latency to stdout
       "-v", "error",
       "-f", "dshow", "-i", `audio=${device}`,
       // ── output 1: raw PCM to stdout ─────────────────────────────────────
@@ -232,13 +257,8 @@ async function main(): Promise<void> {
   const outFile = timestampedPath();
   console.log(`Output:  ${path.basename(outFile)}`);
 
-  // Verify sounds folder
-  if (!fs.existsSync(SOUNDS_DIR) || fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f)).length === 0) {
-    console.log(`Note: no sounds found in ${SOUNDS_DIR} — noise detection will be silent.`);
-  } else {
-    const count = fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f)).length;
-    console.log(`Sounds:  ${count} file(s) loaded from sounds/`);
-  }
+  // Pre-convert sounds once before recording starts (blocking here is fine)
+  preconvertSounds();
 
   const proc = startRecording(device, outFile);
   proc.on("error", err => { console.error(`\nRecording error: ${err.message}`); process.exit(1); });
@@ -260,6 +280,8 @@ async function main(): Promise<void> {
     console.error("Recording failed — output file is missing or empty.");
     process.exit(1);
   }
+
+  cleanupSounds();
 
   const sizeMB = fs.statSync(outFile).size / 1024 / 1024;
   console.log(`Saved: ${path.basename(outFile)}  (${sizeMB.toFixed(1)} MB)`);
