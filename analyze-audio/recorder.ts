@@ -95,7 +95,8 @@ function preconvertSounds(): void {
   for (const file of files) {
     const src = path.join(SOUNDS_DIR, file);
     const tmp = path.join(os.tmpdir(), `sleeper-snd-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
-    const result = spawnSync(ffmpegPath, ["-v", "error", "-i", src, "-y", tmp]);
+    // Force 16-bit 44100 Hz stereo PCM — the only format SoundPlayer reliably accepts
+    const result = spawnSync(ffmpegPath, ["-v", "error", "-i", src, "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-y", tmp]);
     if (result.status === 0) preconvertedWavs.push(tmp);
   }
 
@@ -128,10 +129,11 @@ function playRandomSound(): void {
 
   const ps = spawn(
     "powershell",
-    ["-c", `(New-Object Media.SoundPlayer '${wav}').PlaySync()`],
-    { stdio: ["ignore", "ignore", "pipe"], detached: true }
+    ["-ExecutionPolicy", "Bypass", "-c", `(New-Object Media.SoundPlayer '${wav}').PlaySync()`],
+    { stdio: ["ignore", "ignore", "pipe"] }
   );
   ps.stderr!.on("data", (d: Buffer) => process.stdout.write(`[ps-err: ${d.toString().trim()}] `));
+  ps.on("close", (code: number) => { if (code !== 0) process.stdout.write(`[ps-exit:${code}] `); });
   ps.unref();
 }
 
