@@ -39,8 +39,8 @@ export const DEFAULT_THRESHOLD_DBFS = -57;  // windows above this are counted as
 export const DEFAULT_WINDOW_MS      = 100;  // analysis frame length in milliseconds
 export const DEFAULT_SILENCE_GAP_MS  = 500;  // silence needed to close a noise event
 const SEQUENCE_GAP_SEC        = 10;    // max gap between events to still be the same sequence
-export const DEFAULT_START_OFFSET_MIN = 30;   // skip this many minutes from the start
-export const DEFAULT_END_OFFSET_MIN   = 10;   // skip this many minutes from the end
+export const DEFAULT_START_OFFSET_MIN = 0;   // skip this many minutes from the start
+export const DEFAULT_END_OFFSET_MIN   = 0;   // skip this many minutes from the end
 const CHUNK_SIZE                 = 64 * 1024 * 1024;  // 64 MB read chunks
 
 // ─── Audio Decoding ───────────────────────────────────────────────────────────

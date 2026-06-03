@@ -3,19 +3,17 @@
 /**
  * Record & Analyze
  *
- * Starts recording from the default microphone.
- * Press Enter to stop — the recording is saved and analyzed automatically.
+ * Records from the microphone. While recording, plays a random sound from
+ * the /sounds folder each time noise is detected above the threshold.
+ * Press Enter to stop — the recording is saved and the full analysis runs.
  *
  * Usage:
  *   ts-node analyze-audio/recorder.ts
- *
- * Requirements:
- *   ffmpeg-static (bundled via npm)
- *   A working microphone (Windows: DirectShow)
  */
 
 import { spawn, spawnSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
 import ffmpegPath from "ffmpeg-static";
@@ -35,12 +33,15 @@ import {
 } from "./analyze-audio";
 import { printOutput } from "./utils";
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SOUNDS_DIR      = path.resolve(path.join(__dirname, "..", "sounds"));
+const PLAY_COOLDOWN_MS = 1500; // min ms between sound plays to avoid rapid-fire
+const WINDOW_SAMPLES  = Math.floor((SAMPLE_RATE * DEFAULT_WINDOW_MS) / 1000);
+const WINDOW_BYTES    = WINDOW_SAMPLES * BYTES_PER_SAMPLE;
+
 // ─── Device Detection ─────────────────────────────────────────────────────────
 
-/**
- * Lists available DirectShow audio input devices on Windows.
- * Returns device names in order of appearance.
- */
 function listAudioDevices(): string[] {
   if (!ffmpegPath) throw new Error("ffmpeg-static binary not found.");
 
@@ -54,7 +55,6 @@ function listAudioDevices(): string[] {
   const devices: string[] = [];
 
   for (const line of stderr.split("\n")) {
-    // Each device appears as: "Device Name" (audio)
     const match = line.match(/"([^"]+)"\s*\(audio\)/);
     if (match) devices.push(match[1]);
   }
@@ -64,7 +64,6 @@ function listAudioDevices(): string[] {
 
 // ─── Input Helper ─────────────────────────────────────────────────────────────
 
-/** Asks `question`, resolves with the trimmed answer. */
 function prompt(question: string): Promise<string> {
   return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -72,12 +71,42 @@ function prompt(question: string): Promise<string> {
   });
 }
 
-/** Resolves when the user presses Enter. */
 const waitForEnter = () => prompt("");
+
+// ─── Sound Playback ───────────────────────────────────────────────────────────
+
+let lastPlayedAt = 0;
+
+function playRandomSound(): void {
+  const now = Date.now();
+  if (now - lastPlayedAt < PLAY_COOLDOWN_MS) return;
+  lastPlayedAt = now;
+
+  if (!fs.existsSync(SOUNDS_DIR)) return;
+
+  const files = fs.readdirSync(SOUNDS_DIR)
+    .filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f));
+  if (files.length === 0) return;
+
+  const srcPath = path.join(SOUNDS_DIR, files[Math.floor(Math.random() * files.length)]);
+
+  // Convert to a temp WAV (fast for short notification sounds), then play
+  // via PowerShell SoundPlayer in a detached process so it doesn't block.
+  const tmpWav = path.join(os.tmpdir(), `sleeper-snd-${Date.now()}.wav`);
+
+  const convert = spawnSync(ffmpegPath!, ["-v", "error", "-i", srcPath, "-y", tmpWav]);
+  if (convert.status !== 0) return;
+
+  // PlaySync() blocks the PowerShell process until done, then cleans up.
+  spawn(
+    "powershell",
+    ["-c", `$p = New-Object Media.SoundPlayer '${tmpWav}'; $p.PlaySync(); Remove-Item '${tmpWav}'`],
+    { stdio: "ignore", detached: true }
+  ).unref();
+}
 
 // ─── Recording ────────────────────────────────────────────────────────────────
 
-/** Generates a timestamped WAV filename in the project root. */
 function timestampedPath(): string {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -85,15 +114,56 @@ function timestampedPath(): string {
   return path.resolve(path.join(__dirname, ".."), `recording_${ts}.wav`);
 }
 
-/** Starts ffmpeg recording from `device` into `outFile`. Returns the child process. */
+/**
+ * Spawns ffmpeg with two outputs:
+ *   1. Raw s16le PCM → stdout (for real-time analysis)
+ *   2. WAV file      → outFile (for saving)
+ */
 function startRecording(device: string, outFile: string) {
   if (!ffmpegPath) throw new Error("ffmpeg-static binary not found.");
 
   return spawn(
     ffmpegPath,
-    ["-f", "dshow", "-i", `audio=${device}`, "-v", "error", "-y", outFile],
-    { stdio: ["pipe", "ignore", "ignore"] }
+    [
+      "-v", "error",
+      "-f", "dshow", "-i", `audio=${device}`,
+      // ── output 1: raw PCM to stdout ─────────────────────────────────────
+      "-ar", String(SAMPLE_RATE), "-ac", "1", "-f", "s16le", "pipe:1",
+      // ── output 2: WAV to file ────────────────────────────────────────────
+      "-ar", String(SAMPLE_RATE), "-ac", "1", "-y", outFile,
+    ],
+    { stdio: ["pipe", "pipe", "ignore"] }
   );
+}
+
+// ─── Real-time Noise Detection ────────────────────────────────────────────────
+
+function attachNoiseDetector(stdout: NodeJS.ReadableStream): void {
+  let buf      = Buffer.alloc(0);
+  let wasNoise = false;
+
+  stdout.on("data", (chunk: Buffer) => {
+    buf = Buffer.concat([buf, chunk]);
+
+    while (buf.length >= WINDOW_BYTES) {
+      const win = buf.subarray(0, WINDOW_BYTES);
+      buf = buf.subarray(WINDOW_BYTES);
+
+      let sumSq = 0;
+      for (let s = 0; s < WINDOW_SAMPLES; s++) {
+        const sample = win.readInt16LE(s * BYTES_PER_SAMPLE);
+        sumSq += sample * sample;
+      }
+      const rms = Math.sqrt(sumSq / WINDOW_SAMPLES);
+      const db  = rms === 0 ? -Infinity : 20 * Math.log10(rms / 32768);
+      const isNoise = db > DEFAULT_THRESHOLD_DBFS;
+
+      // Play sound only on the transition from silence → noise
+      if (isNoise && !wasNoise) playRandomSound();
+
+      wasNoise = isNoise;
+    }
+  });
 }
 
 // ─── Analysis ─────────────────────────────────────────────────────────────────
@@ -110,7 +180,7 @@ function analyze(audioPath: string): void {
     const analyzeStartSec  = DEFAULT_START_OFFSET_MIN * 60;
     const analyzeEndSec    = totalDurationSec - DEFAULT_END_OFFSET_MIN * 60;
 
-    console.log(`Decoded ${(fs.statSync(tmpFile).size / 1024 / 1024).toFixed(1)} MB  (${totalDurationSec.toFixed(2)} s of audio)`);
+    console.log(`Decoded ${(fs.statSync(tmpFile).size / 1024 / 1024).toFixed(1)} MB  (${totalDurationSec.toFixed(2)} s)`);
     console.log("Analyzing…");
 
     const windows = analyzeWindows(tmpFile, DEFAULT_THRESHOLD_DBFS, DEFAULT_WINDOW_MS, analyzeStartSec, analyzeEndSec);
@@ -152,30 +222,33 @@ async function main(): Promise<void> {
     while (choice < 1 || choice > devices.length) {
       const raw = await prompt(`\nSelect device [1–${devices.length}]: `);
       choice = parseInt(raw, 10);
-      if (isNaN(choice) || choice < 1 || choice > devices.length) {
+      if (isNaN(choice) || choice < 1 || choice > devices.length)
         console.log(`  Please enter a number between 1 and ${devices.length}.`);
-      }
     }
     device = devices[choice - 1];
     console.log(`Using: "${device}"`);
   }
 
-  // Prepare output file
   const outFile = timestampedPath();
-  console.log(`Output:  ${path.basename(outFile)}\n`);
+  console.log(`Output:  ${path.basename(outFile)}`);
 
-  // Start recording
+  // Verify sounds folder
+  if (!fs.existsSync(SOUNDS_DIR) || fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f)).length === 0) {
+    console.log(`Note: no sounds found in ${SOUNDS_DIR} — noise detection will be silent.`);
+  } else {
+    const count = fs.readdirSync(SOUNDS_DIR).filter(f => /\.(wav|mp3|ogg|flac|m4a|aac)$/i.test(f)).length;
+    console.log(`Sounds:  ${count} file(s) loaded from sounds/`);
+  }
+
   const proc = startRecording(device, outFile);
+  proc.on("error", err => { console.error(`\nRecording error: ${err.message}`); process.exit(1); });
 
-  proc.on("error", err => {
-    console.error(`\nRecording error: ${err.message}`);
-    process.exit(1);
-  });
+  // Attach real-time noise detector to the PCM stdout stream
+  attachNoiseDetector(proc.stdout!);
 
-  console.log("Recording…  Press Enter to stop.\n");
+  console.log("\nRecording…  Press Enter to stop.\n");
   await waitForEnter();
 
-  // Stop ffmpeg gracefully by sending 'q'
   process.stdout.write("Stopping recording…");
   proc.stdin.write("q\n");
   proc.stdin.end();
@@ -183,7 +256,6 @@ async function main(): Promise<void> {
   await new Promise<void>(resolve => proc.on("close", () => resolve()));
   console.log(" done.\n");
 
-  // Validate file
   if (!fs.existsSync(outFile) || fs.statSync(outFile).size === 0) {
     console.error("Recording failed — output file is missing or empty.");
     process.exit(1);
@@ -192,7 +264,6 @@ async function main(): Promise<void> {
   const sizeMB = fs.statSync(outFile).size / 1024 / 1024;
   console.log(`Saved: ${path.basename(outFile)}  (${sizeMB.toFixed(1)} MB)`);
 
-  // Run analysis
   analyze(outFile);
 }
 
