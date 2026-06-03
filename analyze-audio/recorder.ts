@@ -115,25 +115,19 @@ function cleanupSounds(): void {
  * Uses PowerShell's SoundPlayer.Play() which returns immediately.
  */
 function playRandomSound(): void {
-  if (preconvertedWavs.length === 0) {
-    process.stdout.write("[no sounds] ");
-    return;
-  }
+  if (preconvertedWavs.length === 0) return;
 
   const now = Date.now();
   if (now - lastPlayedAt < PLAY_COOLDOWN_MS) return;
   lastPlayedAt = now;
 
   const wav = preconvertedWavs[Math.floor(Math.random() * preconvertedWavs.length)];
-  process.stdout.write(`[playing: ${path.basename(wav)}] `);
 
   const ps = spawn(
     "powershell",
     ["-ExecutionPolicy", "Bypass", "-c", `(New-Object Media.SoundPlayer '${wav}').PlaySync()`],
     { stdio: ["ignore", "ignore", "pipe"] }
   );
-  ps.stderr!.on("data", (d: Buffer) => process.stdout.write(`[ps-err: ${d.toString().trim()}] `));
-  ps.on("close", (code: number) => { if (code !== 0) process.stdout.write(`[ps-exit:${code}] `); });
   ps.unref();
 }
 
@@ -172,13 +166,10 @@ function startRecording(device: string, outFile: string) {
 // ─── Real-time Noise Detection ────────────────────────────────────────────────
 
 function attachNoiseDetector(stdout: NodeJS.ReadableStream): void {
-  let buf           = Buffer.alloc(0);
-  let wasNoise      = false;
-  let bytesReceived = 0;
+  let buf      = Buffer.alloc(0);
+  let wasNoise = false;
 
   stdout.on("data", (chunk: Buffer) => {
-    if (bytesReceived === 0) process.stdout.write("[pcm-stream-ok] ");
-    bytesReceived += chunk.length;
     buf = Buffer.concat([buf, chunk]);
 
     while (buf.length >= WINDOW_BYTES) {
@@ -194,10 +185,7 @@ function attachNoiseDetector(stdout: NodeJS.ReadableStream): void {
       const db  = rms === 0 ? -Infinity : 20 * Math.log10(rms / 32768);
       const isNoise = db > DEFAULT_THRESHOLD_DBFS;
 
-      if (isNoise && !wasNoise) {
-        process.stdout.write(`[noise:${db.toFixed(1)}dB] `);
-        playRandomSound();
-      }
+      if (isNoise && !wasNoise) playRandomSound();
 
       wasNoise = isNoise;
     }
