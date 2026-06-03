@@ -128,7 +128,7 @@ function playRandomSound(): void {
 
   const ps = spawn(
     "powershell",
-    ["-c", `(New-Object Media.SoundPlayer '${wav}').Play()`],
+    ["-c", `(New-Object Media.SoundPlayer '${wav}').PlaySync()`],
     { stdio: ["ignore", "ignore", "pipe"], detached: true }
   );
   ps.stderr!.on("data", (d: Buffer) => process.stdout.write(`[ps-err: ${d.toString().trim()}] `));
