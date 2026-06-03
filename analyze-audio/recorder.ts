@@ -114,19 +114,25 @@ function cleanupSounds(): void {
  * Uses PowerShell's SoundPlayer.Play() which returns immediately.
  */
 function playRandomSound(): void {
-  if (preconvertedWavs.length === 0) return;
+  if (preconvertedWavs.length === 0) {
+    process.stdout.write("[no sounds] ");
+    return;
+  }
 
   const now = Date.now();
   if (now - lastPlayedAt < PLAY_COOLDOWN_MS) return;
   lastPlayedAt = now;
 
   const wav = preconvertedWavs[Math.floor(Math.random() * preconvertedWavs.length)];
+  process.stdout.write(`[playing: ${path.basename(wav)}] `);
 
-  spawn(
+  const ps = spawn(
     "powershell",
     ["-c", `(New-Object Media.SoundPlayer '${wav}').Play()`],
-    { stdio: "ignore", detached: true }
-  ).unref();
+    { stdio: ["ignore", "ignore", "pipe"], detached: true }
+  );
+  ps.stderr!.on("data", (d: Buffer) => process.stdout.write(`[ps-err: ${d.toString().trim()}] `));
+  ps.unref();
 }
 
 // ─── Recording ────────────────────────────────────────────────────────────────
@@ -164,10 +170,13 @@ function startRecording(device: string, outFile: string) {
 // ─── Real-time Noise Detection ────────────────────────────────────────────────
 
 function attachNoiseDetector(stdout: NodeJS.ReadableStream): void {
-  let buf      = Buffer.alloc(0);
-  let wasNoise = false;
+  let buf           = Buffer.alloc(0);
+  let wasNoise      = false;
+  let bytesReceived = 0;
 
   stdout.on("data", (chunk: Buffer) => {
+    if (bytesReceived === 0) process.stdout.write("[pcm-stream-ok] ");
+    bytesReceived += chunk.length;
     buf = Buffer.concat([buf, chunk]);
 
     while (buf.length >= WINDOW_BYTES) {
@@ -183,8 +192,10 @@ function attachNoiseDetector(stdout: NodeJS.ReadableStream): void {
       const db  = rms === 0 ? -Infinity : 20 * Math.log10(rms / 32768);
       const isNoise = db > DEFAULT_THRESHOLD_DBFS;
 
-      // Play sound only on the transition from silence → noise
-      if (isNoise && !wasNoise) playRandomSound();
+      if (isNoise && !wasNoise) {
+        process.stdout.write(`[noise:${db.toFixed(1)}dB] `);
+        playRandomSound();
+      }
 
       wasNoise = isNoise;
     }
